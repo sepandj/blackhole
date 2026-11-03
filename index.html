@@ -22,6 +22,7 @@
     font-family:var(--mono); -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent}
   canvas{position:fixed; inset:0; width:100vw; height:100lvh; display:block; touch-action:none; cursor:grab}
   canvas:active{cursor:grabbing}
+  #o{z-index:1; pointer-events:none}
   .ui{position:fixed; z-index:2; pointer-events:none; font-size:11px; letter-spacing:.06em; line-height:1.75;
     text-shadow:0 0 8px #000, 0 0 2px #000}
   .ui button, .ui input, .ui label{pointer-events:auto}
@@ -34,6 +35,7 @@
   #mass{display:block; color:var(--dim); margin-top:4px}
   .lines{color:var(--dim); max-width:36rem}
   .lines div{white-space:nowrap; overflow:hidden; text-overflow:clip}
+  .lines .probe{color:var(--ink); white-space:normal; min-height:1.75em}
   .feed{display:flex; flex-direction:column; align-items:flex-end; gap:6px; color:var(--dim); flex:none}
   .feed label{display:flex; gap:8px}
   input[type=range]{-webkit-appearance:none; appearance:none; width:132px; height:22px; background:none; margin:0}
@@ -72,7 +74,8 @@
 </style>
 </head>
 <body>
-<canvas id="c" aria-label="a black hole, drag to fly around it"></canvas>
+<canvas id="c" aria-label="a black hole, drag to fly around it, tap to throw a probe"></canvas>
+<canvas id="o" aria-hidden="true"></canvas>
 
 <div class="shade"></div>
 <div class="ui top">
@@ -86,6 +89,7 @@
     <div id="l2"></div>
     <div id="l3"></div>
     <div id="l4"></div>
+    <div id="l5" class="probe"></div>
   </div>
   <div class="feed">
     <label for="rate"><span>how fast it eats</span><span id="feed"></span></label>
@@ -93,7 +97,7 @@
   </div>
 </div>
 
-<div class="hint">drag to fly around it. pinch or scroll to go closer</div>
+<div class="hint">drag to fly around it. pinch or scroll to go closer. tap to throw a probe</div>
 
 <button class="bang" id="bang" type="button" aria-label="what is this" aria-haspopup="dialog">!</button>
 <div class="note" id="note" role="dialog" aria-modal="true" aria-label="what is this">
@@ -103,6 +107,8 @@
     <p>every pixel follows a ray of light backwards from your eye through curved space, using einstein's equations for a black hole that doesn't spin. nobody painted the dark circle, the thin bright ring around it, or the disk that seems to fold over the top and under the bottom. they all come out of the maths.</p>
     <p>the disk is gas orbiting as fast as gravity lets it, heated by its own friction. its temperature comes from the standard thin disk model. the side coming towards you is brighter and bluer, the side going away dimmer and redder, and light from close in loses energy climbing out. there is no gas inside three times the horizon radius because nothing can orbit there for long. it falls in.</p>
     <p>you are hovering, not falling. go closer and your clock slows down while the sky in front of you gets bluer and brighter. below one and a half times the horizon radius even light can't orbit, and the black hole fills more than half of everything you can see.</p>
+    <p>tap and a small lamp is thrown from where you are, at exactly the speed it would need to circle the black hole at your distance. tap near the hole and it goes straight in. tap further out and it goes more sideways, and near the edge of the screen it circles. in between it orbits, its path slowly turning so the orbit draws a rosette, the same effect that turns mercury's orbit around the sun. throw it at the hole and it falls. the line behind it is where it has been, drawn where that light reaches you. time speeds up while it is out so you can watch a whole orbit.</p>
+    <p>a falling probe never quite gets there, seen from out here. it slows down, reddens and fades at the horizon. its own clock says it crossed long ago.</p>
     <p>every black hole of this kind has the same shape. the size, the speed and the colour change with the mass and with how fast it eats. tap the name to switch.</p>
     <p>your eyes adjust to the brightness here, like they would. the stars are there to show how light bends, not at their real brightness. the masses are measured ones: m87* from the event horizon telescope, sagittarius a* from stars orbiting it, cygnus x-1 from its companion star.</p>
     <p class="sig">sepand</p>

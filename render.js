@@ -116,7 +116,8 @@ let pinch0 = 0, dist0 = 0;
 function onDown(e) {
   if (e.target !== canvas) return;
   canvas.setPointerCapture(e.pointerId);
-  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now() });
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: performance.now(), x0: e.clientX, y0: e.clientY, t0: performance.now(), moved: 0 });
+  if (pointers.size > 1) for (const q of pointers.values()) q.moved = 1e9;
   state.vyaw = state.vpitch = 0;
   state.intro = false; state.target = state.dist;
   if (pointers.size === 2) { const [a, b] = [...pointers.values()]; pinch0 = Math.hypot(a.x - b.x, a.y - b.y); dist0 = state.dist; }
@@ -128,6 +129,7 @@ function onMove(e) {
   const now = performance.now();
   const dx = e.clientX - p.x, dy = e.clientY - p.y;
   const dtp = Math.max(1, now - p.t);
+  p.moved += Math.hypot(dx, dy);
   p.x = e.clientX; p.y = e.clientY; p.t = now;
   if (pointers.size === 1) {
     const k = 3.2 / Math.max(innerWidth, innerHeight) * Math.min(1, Math.sqrt(state.dist / 10) * 0.8 + 0.2);
@@ -141,6 +143,8 @@ function onMove(e) {
   state.lastInput = now;
 }
 function onUp(e) {
+  const p0 = pointers.get(e.pointerId);
+  if (p0 && pointers.size === 1 && e.type === 'pointerup' && p0.moved < 9 && performance.now() - p0.t0 < 400) throwAt(e.clientX, e.clientY);
   pointers.delete(e.pointerId);
   if (pointers.size < 2) pinch0 = 0;
   if (pointers.size === 1) { const p = [...pointers.values()][0]; p.t = performance.now(); state.vyaw = state.vpitch = 0; }
@@ -163,6 +167,110 @@ addEventListener('keydown', (e) => {
   if (e.key === '+' || e.key === '=') state.target = clampD(state.target / 1.15);
   if (e.key === '-') state.target = clampD(state.target * 1.15);
 });
+
+// ---- probes: tap to throw one ----
+// thrown from where you hover, towards where you tapped, at the speed of a circular orbit
+// at your distance. sideways it orbits; towards the hole it falls.
+const PROBE_T = [6500, 3600, 15000];        // colour of each probe's lamp, kelvin
+const probes = [];
+let probeSlot = 0, view = null, camKey = 0, message = '', messageUntil = 0;
+function throwAt(cx, cy) {
+  if (!view) return;
+  // how far from the hole you tap sets how sideways it goes: near the hole straight in,
+  // near the edge of the screen (or further) sideways, which at this speed is a circle
+  const W = canvas.clientWidth, H = canvas.clientHeight;
+  const ox = cx - W / 2, oy = H / 2 - cy;
+  const s = Math.min(1, Math.hypot(ox, oy) / (0.42 * Math.min(W, H)));
+  const th = s * Math.PI / 2;
+  const B = view.B, ol = Math.hypot(ox, oy) || 1;
+  const side = [0, 1, 2].map((i) => (B[i] * ox + B[3 + i] * oy) / ol);
+  const fw = [B[6], B[7], B[8]];
+  const d = [0, 1, 2].map((i) => Math.cos(th) * fw[i] + Math.sin(th) * side[i]);
+  // start a little inside your own radius so a full circle doesn't come back through you
+  const x0 = view.cam.map((c) => c * 0.88);
+  const r = Math.hypot(...x0);
+  const w = r > 1.52 ? Math.min(0.97, P.circularSpeed(r)) : 0.97;
+  const k = probeSlot++ % 3;
+  const old = probes.findIndex((q) => q.k === k); if (old >= 0) probes.splice(old, 1);
+  const T = PROBE_T[k];
+  const c = bbLum(T), m = Math.max(...c.rgb);
+  probes.push({ k, T, K: 1.5 / c.lum, rgb: c.rgb.map((v) => Math.round(255 * Math.min(1, v / m))), s: P.throwProbe(x0, d, w), w0: w, trail: [], gone: false });
+  state.lastInput = performance.now();
+  document.body.classList.add('touched', 'thrown');
+}
+function stepProbes(dtc) {
+  for (let i = probes.length - 1; i >= 0; i--) {
+    const q = probes[i];
+    P.stepProbe(q.s, dtc, { k: 0.01, maxSub: 3000 });
+    const r = Math.hypot(...q.s.x);
+    const last = q.trail[q.trail.length - 1];
+    if (!last || Math.hypot(q.s.x[0] - last.x[0], q.s.x[1] - last.x[1], q.s.x[2] - last.x[2]) > Math.max(0.06, 0.03 * r)) {
+      q.trail.push({ x: q.s.x.slice(), psi: last ? last.psi : null, d: null, hidden: false, key: -1 });
+      if (q.trail.length > 240) q.trail.shift();
+    }
+    const loc = P.probeLocal(q.s);
+    if (loc.clock < 0.004 || r < 1.00002) {
+      probes.splice(i, 1);
+      message = 'the probe is gone. from out here it never quite crosses the horizon, it slows down, reddens and fades';
+      messageUntil = performance.now() + 9000;
+    } else if (r > 160) {
+      probes.splice(i, 1);
+      message = 'the probe got away';
+      messageUntil = performance.now() + 5000;
+    }
+  }
+}
+// solve where each trail point's light lands, a few milliseconds per frame
+let solveAt = 0;
+function solveTrails(budgetMs) {
+  const t0 = performance.now();
+  const all = [];
+  for (const q of probes) for (const pt of q.trail) all.push(pt);
+  if (!all.length) return;
+  for (let n = 0; n < all.length && performance.now() - t0 < budgetMs; n++) {
+    const pt = all[(solveAt + n) % all.length];
+    if (pt.key === camKey) continue;
+    const im = P.imageOf(view.cam, pt.x, pt.psi);
+    pt.key = camKey;
+    if (im) { pt.d = im.d; pt.psi = im.psi; pt.hidden = im.hidden; } else pt.d = null;
+  }
+  solveAt = (solveAt + 7) % Math.max(1, all.length);
+}
+const ov = document.getElementById('o');
+const octx = ov.getContext('2d');
+function drawTrails() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const W = Math.round(ov.clientWidth * dpr), H = Math.round(ov.clientHeight * dpr);
+  if (ov.width !== W || ov.height !== H) { ov.width = W; ov.height = H; }
+  octx.clearRect(0, 0, W, H);
+  if (!probes.length || !view) return;
+  const B = view.B;
+  const proj = (d) => {
+    const z = d[0] * B[6] + d[1] * B[7] + d[2] * B[8];
+    if (z <= 0.01) return null;
+    const x = (d[0] * B[0] + d[1] * B[1] + d[2] * B[2]) / z / view.tan[0];
+    const y = (d[0] * B[3] + d[1] * B[4] + d[2] * B[5]) / z / view.tan[1];
+    return [(x + 1) / 2 * W, (1 - y) / 2 * H];
+  };
+  octx.globalCompositeOperation = 'lighter';
+  octx.lineCap = 'round';
+  octx.lineWidth = 1.5 * dpr;
+  const jump = 0.2 * Math.min(W, H);
+  for (const q of probes) {
+    const n = q.trail.length;
+    let prev = null;
+    for (let i = 0; i < n; i++) {
+      const pt = q.trail[i];
+      const sp = pt.d ? proj(pt.d) : null;
+      if (sp && prev && Math.hypot(sp[0] - prev[0], sp[1] - prev[1]) < jump) {
+        const a = 0.85 * Math.pow((i + 1) / n, 1.1) * (pt.hidden ? 0.25 : 1);
+        octx.strokeStyle = `rgba(${q.rgb[0]},${q.rgb[1]},${q.rgb[2]},${a.toFixed(3)})`;
+        octx.beginPath(); octx.moveTo(prev[0], prev[1]); octx.lineTo(sp[0], sp[1]); octx.stroke();
+      }
+      prev = sp;
+    }
+  }
+}
 
 // ---- resolution that adapts to the device ----
 let scale = STILL ? 1 : coarse ? 0.55 : 0.8;
@@ -230,7 +338,12 @@ function hud() {
     ? `your clock runs at ${fmt(f * 100, 3)}% of a far one. light can't orbit this close`
     : `your clock runs at ${fmt(f * 100, 4)}% of a far one`;
   $('l3').textContent = `inner orbit ${durText(ISCO_PERIOD * tu)}, hottest gas ${fmt(Math.round(T0 * tauPeak / 100) * 100, 3)} K`;
-  $('l4').textContent = `sped up, each second is ${durText(SPEED * tu)} of your time`;
+  $('l4').textContent = `sped up, each second is ${durText(SPEED * warp * tu)} of your time`;
+  const q = probes[probes.length - 1];
+  if (q) {
+    const loc = P.probeLocal(q.s);
+    $('l5').textContent = `probe ${fmt(loc.r, 3)} r\u209b out, ${fmt(loc.speed, 2)} c, its clock at ${fmt(loc.clock * 100, 3)}%`;
+  } else $('l5').textContent = performance.now() < messageUntil ? message : '';
   $('feed').textContent = state.edd >= 0.01 ? `${fmt(state.edd * 100, 2)}%` : `${fmt(state.edd * 100, 2)}%`;
 }
 $('name').addEventListener('click', () => {
@@ -242,7 +355,7 @@ $('rate').addEventListener('input', (e) => { state.edd = Math.pow(10, +e.target.
 $('rate').value = Math.log10(state.edd);
 
 // ---- frame ----
-let last = performance.now(), fade = 0;
+let last = performance.now(), fade = 0, warp = 1;
 function basis(yaw, pitch) {
   const cp = Math.cos(pitch);
   const pos = [cp * Math.sin(yaw), Math.sin(pitch), cp * Math.cos(yaw)];
@@ -274,7 +387,13 @@ function frame(now) {
 
   // physics for this frame
   const r0 = state.dist, f = Math.sqrt(1 - 1 / r0);
-  if (!STILL) state.t += dt * SPEED / f; // the hovering camera ages slower, so the gas turns faster to it
+  // with a probe out, time runs faster so its orbit is watchable (one kepler period in ~16 s)
+  const q = probes[probes.length - 1];
+  const wantWarp = q ? Math.min(30, Math.max(1, 2 * Math.PI * Math.sqrt(Math.hypot(...q.s.x) ** 3 / 0.5) / 16 / SPEED)) : 1;
+  warp += (wantWarp - warp) * (1 - Math.exp(-dt * 1.2));
+  const dtc = STILL ? 0 : dt * SPEED * warp / f; // the hovering camera ages slower, so the gas turns faster to it
+  state.t += dtc;
+  if (dtc > 0) stepProbes(dtc);
   const m = state.hole.mass * P.MSUN;
   const T0 = P.diskT0(m, state.edd);
   // eyes adapt: aim the hottest gas, as seen from the hovering camera, at a fixed display level
@@ -286,12 +405,14 @@ function frame(now) {
   size();
   const { pos, m: B } = basis(state.yaw, state.pitch);
   const cam = pos.map((x) => x * r0);
+  if (!view || Math.hypot(cam[0] - view.cam[0], cam[1] - view.cam[1], cam[2] - view.cam[2]) > 1e-4 * r0) camKey++;
   const aspect = tw / th;
   // look wider as the shadow grows (synge: sin a = (sqrt 27 / 2) / r * sqrt(1 - 1/r))
   const sa = Math.min(1, P.SHADOW_B / r0 * f);
   const shadowHalf = r0 > 1.5 ? Math.asin(sa) : Math.PI - Math.asin(sa);
   const shortHalf = Math.tan(Math.min(68, Math.max(aspect >= 1 ? 31 : 25, shadowHalf * 180 / Math.PI * 1.55)) * Math.PI / 180);
   const tan = aspect >= 1 ? [shortHalf * aspect, shortHalf] : [shortHalf, shortHalf / aspect];
+  view = { cam, B, tan };
 
   gl.disable(gl.BLEND);
   gl.bindFramebuffer(gl.FRAMEBUFFER, levels[0].f);
@@ -311,6 +432,12 @@ function frame(now) {
   gl.uniform1f(u.uPix, 2 * tan[1] / th);
   gl.uniform1i(u.uSteps, steps);
   gl.uniform1f(u.uDiskOut, P.DISK_OUT);
+  const pr = new Float32Array(12), pw = new Float32Array(12), pt = new Float32Array(6);
+  for (const q of probes) {
+    const loc = P.probeLocal(q.s), k = q.k;
+    pr.set([...q.s.x, 1], k * 4); pw.set([...loc.w, loc.gamma], k * 4); pt.set([q.T, q.K], k * 2);
+  }
+  gl.uniform4fv(u['uPr[0]'], pr); gl.uniform4fv(u['uPw[0]'], pw); gl.uniform2fv(u['uPt[0]'], pt);
   gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texDisk); gl.uniform1i(u.uDiskT, 0);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, texBB); gl.uniform1i(u.uBB, 1);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -349,6 +476,8 @@ function frame(now) {
   gl.uniform2f(progFinal.u.uRes, canvas.width, canvas.height);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+  if (probes.length) solveTrails(coarse ? 2.5 : 3.5);
+  drawTrails();
   if (now - (frame.h || 0) > 250) { frame.h = now; hud(); }
   if (STILL) { gl.finish(); window.__bh.done = true; return; }
   requestAnimationFrame(frame);
@@ -357,4 +486,4 @@ hud();
 requestAnimationFrame(frame);
 
 // for testing
-window.__bh = { state, get scale() { return scale; }, set scale(v) { scale = v; }, set steps(v) { steps = v; } };
+window.__bh = { state, probes, throwAt, get warp() { return warp; }, get scale() { return scale; }, set scale(v) { scale = v; }, set steps(v) { steps = v; } };

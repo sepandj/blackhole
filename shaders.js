@@ -24,6 +24,11 @@ uniform int uSteps;
 uniform float uDiskOut;
 uniform sampler2D uDiskT; // F^(1/4) over the disk, log radius
 uniform sampler2D uBB;    // blackbody: rgb chromaticity, log10 luminance
+// probes: position (w = 1 if there), local velocity seen by a hovering observer (w = gamma),
+// and (temperature of its lamp, display units per cd/m^2)
+uniform vec4 uPr[3];
+uniform vec4 uPw[3];
+uniform vec2 uPt[3];
 out vec4 o;
 
 const float K = 0.075;    // step = K r, same as physics.js
@@ -141,6 +146,8 @@ void main(){
   vec3 col = vec3(0);
   float tr = 1.0;
   float rEsc = max(1.1 * r0, 40.0);
+  float path = 0.0;
+  bool anyProbe = uPr[0].w + uPr[1].w + uPr[2].w > 0.5;
 
   for (int i = 0; i < 1000; i++){
     if (i >= uSteps) { tr = 0.0; break; }
@@ -167,6 +174,35 @@ void main(){
     vec3 x4 = x + v3 * dt, v4 = v + a3 * dt; vec3 a4 = acc(x4, h2);
     vec3 xn = x + (dt / 6.0) * (v + 2.0 * v2 + 2.0 * v3 + v4);
     vec3 vn = v + (dt / 6.0) * (a1 + 2.0 * a2 + 2.0 * a3 + a4);
+
+    vec3 seg = xn - x;
+    float sl = length(seg);
+    bool hitProbe = false;
+    if (anyProbe){
+      for (int k = 0; k < 3; k++){
+        if (uPr[k].w < 0.5) continue;
+        vec3 P = uPr[k].xyz;
+        float tt = clamp(dot(P - x, seg) / (sl * sl), 0.0, 1.0);
+        vec3 q = x + seg * tt;
+        float dd = length(q - P);
+        // a small lamp; never smaller than about two pixels where you see it
+        float rad = max(0.05, 2.8 * uPix * (path + tt * sl));
+        if (dd < rad){
+          float rq = length(q), sq = sqrt(max(1.0 - 1.0 / rq, 1e-9));
+          vec3 rhq = q / rq;
+          float vr = dot(v, rhq);
+          vec3 nl = normalize(vr / sq * rhq + (v - vr * rhq));   // traced ray, hovering frame there
+          // its light: gravity between there and here, and doppler from its own motion
+          float g = sq / (uF * uPw[k].w * (1.0 + dot(uPw[k].xyz, nl)));
+          float limb = sqrt(max(0.0, 1.0 - dd * dd / (rad * rad)));
+          col += tr * bb(g * uPt[k].x) * uPt[k].y * (0.55 + 0.45 * limb);
+          hitProbe = true;
+          break;
+        }
+      }
+    }
+    if (hitProbe) { tr = 0.0; break; }
+    path += sl;
 
     if (x.y * xn.y < 0.0){
       float t = x.y / (x.y - xn.y);

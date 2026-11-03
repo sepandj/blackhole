@@ -210,3 +210,138 @@ export function cameraRay(r0, alpha) {
   const f = Math.sqrt(1 - 1 / r0);
   return { x: [r0, 0, 0], v: [Math.cos(alpha) * f, Math.sin(alpha), 0] };
 }
+
+// ---- matter: a probe in free fall ----
+// per unit mass, proper time tau, r_s = 1 (so G M = 1/2), exactly:
+//   d2x/dtau2 = -x / (2 r^3) - 3/2 L^2 x / r^5,  L = |x cross dx/dtau|
+//   dt/dtau   = E / (1 - 1/r)
+// x is the same flat stand-in for schwarzschild r and angles the light rays use.
+
+// speed a hovering observer at r must give something for it to circle (fraction of c)
+export const circularSpeed = (r) => Math.sqrt(0.5 / (r - 1));
+
+// thrown from radius |x0| in the local direction d (unit), at speed w (fraction of c),
+// as measured by the hovering observer there
+export function throwProbe(x0, d, w) {
+  const r = len(x0), rh = [x0[0] / r, x0[1] / r, x0[2] / r];
+  const sf = Math.sqrt(1 - 1 / r), gam = 1 / Math.sqrt(1 - w * w);
+  const dr = dot(d, rh);
+  const v = [0, 1, 2].map((i) => gam * w * (dr * sf * rh[i] + (d[i] - dr * rh[i])));
+  return { x: x0.slice(), v, E: gam * sf, tau: 0, t: 0 };
+}
+
+function pAcc(x, L2, out) {
+  const r2 = x[0] * x[0] + x[1] * x[1] + x[2] * x[2], r = Math.sqrt(r2);
+  const k = -0.5 / (r2 * r) - 1.5 * L2 / (r2 * r2 * r);
+  out[0] = k * x[0]; out[1] = k * x[1]; out[2] = k * x[2];
+}
+// advance by dt of far-away (coordinate) time. returns false if it never got there
+// (only near the horizon, where its own time almost stops).
+const _a = [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0]], _x = [0, 0, 0], _v = [0, 0, 0];
+export function stepProbe(p, dt, opts = {}) {
+  const kStep = opts.k ?? 0.01, maxSub = opts.maxSub ?? 4000;
+  let left = dt;
+  const x = p.x, v = p.v;
+  for (let s = 0; s < maxSub && left > 1e-12; s++) {
+    const c = [x[1] * v[2] - x[2] * v[1], x[2] * v[0] - x[0] * v[2], x[0] * v[1] - x[1] * v[0]];
+    const L2 = c[0] * c[0] + c[1] * c[1] + c[2] * c[2];
+    const r = len(x), f = 1 - 1 / r;
+    if (r < 1 + 1e-9) return false;
+    // never step more than a fifth of the way to the horizon: seen from far away it only creeps closer
+    let h = Math.min(kStep * r * Math.sqrt(r), 0.2 * (r - 1));
+    const hMax = left * f / p.E;   // the proper time that fits in what is left
+    if (h > hMax) h = hMax;
+    // rk4 on (x, v, t)
+    const A = _a;
+    pAcc(x, L2, A[0]);
+    for (let i = 0; i < 3; i++) { _x[i] = x[i] + v[i] * h / 2; _v[i] = v[i] + A[0][i] * h / 2; }
+    const r2 = len(_x); pAcc(_x, L2, A[1]); const v2 = _v.slice();
+    for (let i = 0; i < 3; i++) { _x[i] = x[i] + v2[i] * h / 2; _v[i] = v[i] + A[1][i] * h / 2; }
+    const r3 = len(_x); pAcc(_x, L2, A[2]); const v3 = _v.slice();
+    for (let i = 0; i < 3; i++) { _x[i] = x[i] + v3[i] * h; _v[i] = v[i] + A[2][i] * h; }
+    const r4 = len(_x); pAcc(_x, L2, A[3]); const v4 = _v.slice();
+    const tdot = (rr) => p.E / (1 - 1 / rr);
+    const dtc = h / 6 * (tdot(r) + 2 * tdot(r2) + 2 * tdot(r3) + tdot(r4));
+    for (let i = 0; i < 3; i++) {
+      x[i] += h / 6 * (v[i] + 2 * v2[i] + 2 * v3[i] + v4[i]);
+      v[i] += h / 6 * (A[0][i] + 2 * A[1][i] + 2 * A[2][i] + A[3][i]);
+    }
+    p.tau += h; p.t += dtc; left -= dtc;
+  }
+  return left <= 1e-9;
+}
+
+// what the hovering observer at the probe's place measures
+export function probeLocal(p) {
+  const x = p.x, v = p.v, r = len(x), rh = [x[0] / r, x[1] / r, x[2] / r];
+  const f = 1 - 1 / r, sf = Math.sqrt(f), vr = dot(v, rh);
+  const u = [0, 1, 2].map((i) => vr / sf * rh[i] + (v[i] - vr * rh[i]));
+  const gam = Math.sqrt(1 + dot(u, u));
+  return { r, w: u.map((c) => c / gam), gamma: gam, speed: Math.sqrt(dot(u, u)) / gam, clock: f / p.E };
+}
+
+// ---- where a point appears: the light ray from the camera that passes through it ----
+// returns the local direction (unit, camera frame) of the main image of P, and whether
+// that light crossed the disk on the way. guess: last answer's angle, for speed.
+const R0 = { r: 0 }, RINF = { r: Infinity };
+export function imageOf(cam, P, guess, diskOut = DISK_OUT, tol = 1.5e-4) {
+  const r0 = len(cam), ch = [cam[0] / r0, cam[1] / r0, cam[2] / r0];
+  const pc = dot(P, ch);
+  let e2 = [P[0] - pc * ch[0], P[1] - pc * ch[1], P[2] - pc * ch[2]];
+  const pl = len(e2);
+  if (pl < 1e-9) return null;
+  e2 = e2.map((c) => c / pl);
+  const Phi = Math.atan2(pl, pc), rP = len(P);
+  const sf0 = Math.sqrt(1 - 1 / r0);
+  const rEsc = Math.max(3 * rP, 1.5 * r0, 60);
+  // shoot at angle psi from the inward direction, towards P's side
+  const shoot = (psi) => {
+    // in the plane (ch, e2): start at (r0, 0); the radial part of the direction is scaled
+    let x0 = r0, x1 = 0, v0 = -Math.cos(psi) * sf0, v1 = Math.sin(psi);
+    const h2 = (x0 * v1 - x1 * v0) ** 2, c1 = ch[1], e21 = e2[1];
+    let hidden = false, th = 0;
+    for (let i = 0; i < 600; i++) {
+      const r = Math.sqrt(x0 * x0 + x1 * x1);
+      if (r < 1) return R0;
+      if (r > rEsc && x0 * v0 + x1 * v1 > 0) return RINF;
+      const dt = STEP_K * r * Math.min(Math.max(r / 8, 1), 4) * 0.6;
+      let q = x0 * x0 + x1 * x1, k = -1.5 * h2 / (q * q * Math.sqrt(q));
+      const a0 = k * x0, a1 = k * x1;
+      let p0 = x0 + v0 * dt / 2, p1 = x1 + v1 * dt / 2; q = p0 * p0 + p1 * p1; k = -1.5 * h2 / (q * q * Math.sqrt(q));
+      const b0 = k * p0, b1 = k * p1, w0 = v0 + a0 * dt / 2, w1 = v1 + a1 * dt / 2;
+      p0 = x0 + w0 * dt / 2; p1 = x1 + w1 * dt / 2; q = p0 * p0 + p1 * p1; k = -1.5 * h2 / (q * q * Math.sqrt(q));
+      const c0 = k * p0, cc1 = k * p1, y0 = v0 + b0 * dt / 2, y1 = v1 + b1 * dt / 2;
+      p0 = x0 + y0 * dt; p1 = x1 + y1 * dt; q = p0 * p0 + p1 * p1; k = -1.5 * h2 / (q * q * Math.sqrt(q));
+      const d0 = k * p0, d1 = k * p1, z0 = v0 + c0 * dt, z1 = v1 + cc1 * dt;
+      const n0 = x0 + dt / 6 * (v0 + 2 * w0 + 2 * y0 + z0), n1 = x1 + dt / 6 * (v1 + 2 * w1 + 2 * y1 + z1);
+      v0 += dt / 6 * (a0 + 2 * b0 + 2 * c0 + d0);
+      v1 += dt / 6 * (a1 + 2 * b1 + 2 * cc1 + d1);
+      const ya = x0 * c1 + x1 * e21, yb = n0 * c1 + n1 * e21;   // height above the disk plane
+      let th2 = Math.atan2(n1, n0); if (th2 < th - Math.PI) th2 += 2 * Math.PI;
+      const kk = ya * yb < 0 ? ya / (ya - yb) : 2;
+      if (th2 >= Phi) {
+        const kc = (Phi - th) / Math.max(th2 - th, 1e-12);
+        if (kk < kc) { const rd = Math.hypot(x0 + (n0 - x0) * kk, x1 + (n1 - x1) * kk); if (rd > 3 && rd < diskOut) hidden = true; }
+        return { r: Math.hypot(x0 + (n0 - x0) * kc, x1 + (n1 - x1) * kc), hidden };
+      }
+      if (kk <= 1) { const rd = Math.hypot(x0 + (n0 - x0) * kk, x1 + (n1 - x1) * kk); if (rd > 3 && rd < diskOut) hidden = true; }
+      x0 = n0; x1 = n1; th = th2;
+    }
+    return R0;
+  };
+  const F = (psi) => { const s = shoot(psi); return { s, g: s.r === Infinity ? 1e9 : s.r - rP }; };
+  let lo = 0, hi = Math.PI, best = null;
+  if (guess != null) {
+    const a = Math.max(1e-4, guess - 0.006), b = Math.min(Math.PI - 1e-4, guess + 0.006);
+    const fa = F(a), fb = F(b);
+    if (fa.g < 0 && fb.g > 0) { lo = a; hi = b; }
+  }
+  for (let i = 0; i < 40 && hi - lo > tol; i++) {
+    const m = (lo + hi) / 2, fm = F(m);
+    if (fm.g < 0) lo = m; else { hi = m; best = fm.s; }
+  }
+  const psi = (lo + hi) / 2;
+  if (!best || best.r === Infinity) return null;
+  const d = [0, 1, 2].map((i) => -Math.cos(psi) * ch[i] + Math.sin(psi) * e2[i]);
+  return { d, psi, hidden: best.hidden };
+}
