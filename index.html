@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>black hole</title>
+<meta name="description" content="a black hole worked out from einstein's equations, light ray by light ray, in your browser. drag to fly around it.">
+<meta name="theme-color" content="#000000">
+<meta property="og:title" content="black hole">
+<meta property="og:description" content="worked out, not drawn. drag to fly around it.">
+<meta property="og:url" content="https://blackhole.sepand.dev/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://blackhole.sepand.dev/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23000'/%3E%3Cellipse cx='16' cy='16' rx='14' ry='3.2' fill='none' stroke='%23f3c98b' stroke-width='1.6'/%3E%3Ccircle cx='16' cy='16' r='6.5' fill='%23000' stroke='%23ffe2b0' stroke-width='1.2'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --ink:#e9e3d8; --dim:rgba(233,227,216,.55); --faint:rgba(233,227,216,.32);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,"DejaVu Sans Mono",monospace;
+    color-scheme:dark;
+  }
+  html,body{margin:0; height:100%; background:#000; color:var(--ink); overflow:hidden;
+    font-family:var(--mono); -webkit-font-smoothing:antialiased; -webkit-tap-highlight-color:transparent}
+  canvas{position:fixed; inset:0; width:100vw; height:100lvh; display:block; touch-action:none; cursor:grab}
+  canvas:active{cursor:grabbing}
+  .ui{position:fixed; z-index:2; pointer-events:none; font-size:11px; letter-spacing:.06em; line-height:1.75;
+    text-shadow:0 0 8px #000, 0 0 2px #000}
+  .ui button, .ui input, .ui label{pointer-events:auto}
+  .top{top:max(16px,env(safe-area-inset-top)); left:max(16px,env(safe-area-inset-left))}
+  .bot{bottom:max(16px,env(safe-area-inset-bottom)); left:max(16px,env(safe-area-inset-left)); right:max(16px,env(safe-area-inset-right));
+    display:flex; justify-content:space-between; align-items:flex-end; gap:16px}
+  button{font:inherit; color:inherit; background:none; border:0; padding:0; cursor:pointer; letter-spacing:inherit}
+  #name{font-size:14px; letter-spacing:.14em; color:var(--ink); border-bottom:1px solid var(--faint); padding-bottom:1px}
+  #name:hover{border-color:var(--ink)}
+  #mass{display:block; color:var(--dim); margin-top:4px}
+  .lines{color:var(--dim); max-width:36rem}
+  .lines div{white-space:nowrap; overflow:hidden; text-overflow:clip}
+  .feed{display:flex; flex-direction:column; align-items:flex-end; gap:6px; color:var(--dim); flex:none}
+  .feed label{display:flex; gap:8px}
+  input[type=range]{-webkit-appearance:none; appearance:none; width:132px; height:22px; background:none; margin:0}
+  input[type=range]::-webkit-slider-runnable-track{height:1px; background:var(--faint)}
+  input[type=range]::-moz-range-track{height:1px; background:var(--faint)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none; width:13px; height:13px; margin-top:-6px; border-radius:50%; background:#000; border:1px solid var(--ink)}
+  input[type=range]::-moz-range-thumb{width:11px; height:11px; border-radius:50%; background:#000; border:1px solid var(--ink)}
+  .hint{position:fixed; z-index:2; left:64px; right:64px; top:max(24px,calc(env(safe-area-inset-top) + 16px)); text-align:center; font-size:11px; letter-spacing:.16em;
+    color:var(--dim); pointer-events:none; transition:opacity 1.6s; opacity:0; animation:hint 1.6s 3.5s forwards}
+  @keyframes hint{to{opacity:1}}
+  body.touched .hint{opacity:0 !important; animation:none}
+  .bang{position:fixed; z-index:3; top:max(10px,env(safe-area-inset-top)); right:max(10px,env(safe-area-inset-right));
+    width:44px; height:44px; font-size:14px; color:var(--dim)}
+  .bang:hover{color:var(--ink)}
+  .note{position:fixed; inset:0; z-index:4; overflow-y:auto; -webkit-overflow-scrolling:touch; background:rgba(0,0,0,.82);
+    -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); opacity:0; visibility:hidden; transition:opacity .4s, visibility .4s}
+  .note.on{opacity:1; visibility:visible}
+  .note-in{max-width:30rem; margin:0 auto; padding:max(72px,calc(env(safe-area-inset-top) + 56px)) 24px max(56px,calc(env(safe-area-inset-bottom) + 40px));
+    font-size:13px; line-height:1.85; letter-spacing:.02em; color:var(--ink)}
+  .note-in p{margin:0 0 1.1em}
+  .note-in .sig{color:var(--dim)}
+  .note-in a{color:inherit}
+  .note .x{position:fixed; z-index:5; top:max(10px,env(safe-area-inset-top)); right:max(10px,env(safe-area-inset-right)); width:44px; height:44px}
+  .shade{position:fixed; z-index:1; left:0; right:0; bottom:0; height:190px; pointer-events:none;
+    background:linear-gradient(to top, rgba(0,0,0,.55), rgba(0,0,0,.25) 55%, transparent)}
+  .nogl .ui, .nogl .hint{display:none}
+  .sorry{display:none}
+  .nogl .sorry{display:flex; position:fixed; inset:0; align-items:center; justify-content:center; padding:24px; text-align:center; font-size:13px; line-height:1.8; color:var(--dim)}
+  @media (max-width:560px){
+    .bot{flex-direction:column; align-items:stretch; gap:10px}
+    .feed{align-items:flex-start}
+    .feed label{width:100%; justify-content:space-between}
+    input[type=range]{width:100%}
+    .lines div{white-space:normal}
+  }
+</style>
+</head>
+<body>
+<canvas id="c" aria-label="a black hole, drag to fly around it"></canvas>
+
+<div class="shade"></div>
+<div class="ui top">
+  <button id="name" type="button" title="another black hole">m87*</button>
+  <span id="mass"></span>
+</div>
+
+<div class="ui bot">
+  <div class="lines">
+    <div id="l1"></div>
+    <div id="l2"></div>
+    <div id="l3"></div>
+    <div id="l4"></div>
+  </div>
+  <div class="feed">
+    <label for="rate"><span>how fast it eats</span><span id="feed"></span></label>
+    <input id="rate" type="range" min="-6" max="0" step="0.05" value="-3.7" aria-label="how fast it eats, as a share of its eddington limit">
+  </div>
+</div>
+
+<div class="hint">drag to fly around it. pinch or scroll to go closer</div>
+
+<button class="bang" id="bang" type="button" aria-label="what is this" aria-haspopup="dialog">!</button>
+<div class="note" id="note" role="dialog" aria-modal="true" aria-label="what is this">
+  <button class="x" id="x" type="button" aria-label="close"><svg viewBox="0 0 14 14" width="14" height="14"><path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="1.2"/></svg></button>
+  <div class="note-in">
+    <p>this is a black hole, worked out rather than drawn.</p>
+    <p>every pixel follows a ray of light backwards from your eye through curved space, using einstein's equations for a black hole that doesn't spin. nobody painted the dark circle, the thin bright ring around it, or the disk that seems to fold over the top and under the bottom. they all come out of the maths.</p>
+    <p>the disk is gas orbiting as fast as gravity lets it, heated by its own friction. its temperature comes from the standard thin disk model. the side coming towards you is brighter and bluer, the side going away dimmer and redder, and light from close in loses energy climbing out. there is no gas inside three times the horizon radius because nothing can orbit there for long. it falls in.</p>
+    <p>you are hovering, not falling. go closer and your clock slows down while the sky in front of you gets bluer and brighter. below one and a half times the horizon radius even light can't orbit, and the black hole fills more than half of everything you can see.</p>
+    <p>every black hole of this kind has the same shape. the size, the speed and the colour change with the mass and with how fast it eats. tap the name to switch.</p>
+    <p>your eyes adjust to the brightness here, like they would. the stars are there to show how light bends, not at their real brightness. the masses are measured ones: m87* from the event horizon telescope, sagittarius a* from stars orbiting it, cygnus x-1 from its companion star.</p>
+    <p class="sig">sepand</p>
+  </div>
+</div>
+
+<div class="sorry">this needs webgl2, which this browser doesn't have.<br>try a recent chrome, safari or firefox.</div>
+
+<script type="module" src="render.js"></script>
+<script src="note.js" defer></script>
+</body>
+</html>
